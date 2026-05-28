@@ -1,0 +1,36 @@
+name: Bug Report
+description: Report a reproducible problem in KubeTable Community.
+title: "bug: "
+labels:
+  - bug
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps To Reproduce
+      description: List the smallest steps that reproduce the issue.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      placeholder: macOS 15, Windows 11, Ubuntu 24.04
+  - type: textarea
+    id: notes
+    attributes:
+      label: Notes
+      description: Remove secrets, kubeconfigs, tokens, passwords, and private URLs before posting.

@@ -1,0 +1,649 @@
+# KubeTable test environment
+# Deploys PostgreSQL, MySQL, Redis, and MongoDB in the `kubetable-test` namespace
+# Each DB has a credentials Secret named to match KubeTable's auto-detection logic,
+# seed data, and a writer pod that continuously inserts rows/keys.
+#
+# Usage:
+#   kubectl apply -f kubetable-test.yaml
+#   kubectl delete -f kubetable-test.yaml   # to tear down
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kubetable-test
+
+# ─── PostgreSQL ───────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: postgres-credentials
+  namespace: kubetable-test
+type: Opaque
+stringData:
+  username: pgadmin
+  password: pgpassword123
+  database: testdb
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: password
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: postgres-credentials
+                  key: database
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "pgadmin", "-d", "testdb"]
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: kubetable-test
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+
+---
+# Seeds tables and inserts initial rows; runs once then exits.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: postgres-seed
+  namespace: kubetable-test
+spec:
+  restartPolicy: OnFailure
+  initContainers:
+    - name: wait
+      image: postgres:16
+      command:
+        - sh
+        - -c
+        - until pg_isready -h postgres -U pgadmin -d testdb; do sleep 2; done
+  containers:
+    - name: seed
+      image: postgres:16
+      env:
+        - name: PGPASSWORD
+          value: pgpassword123
+      command:
+        - psql
+        - -h
+        - postgres
+        - -U
+        - pgadmin
+        - -d
+        - testdb
+        - -c
+        - |
+          CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            email TEXT UNIQUE NOT NULL,
+            created_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          CREATE TABLE IF NOT EXISTS products (
+            id SERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            price NUMERIC(10,2),
+            stock INT DEFAULT 0
+          );
+          CREATE TABLE IF NOT EXISTS orders (
+            id SERIAL PRIMARY KEY,
+            user_id INT REFERENCES users(id),
+            product_id INT REFERENCES products(id),
+            quantity INT,
+            ordered_at TIMESTAMPTZ DEFAULT NOW()
+          );
+          INSERT INTO users (name, email) VALUES
+            ('Alice', 'alice@example.com'),
+            ('Bob',   'bob@example.com'),
+            ('Carol', 'carol@example.com')
+          ON CONFLICT DO NOTHING;
+          INSERT INTO products (name, price, stock) VALUES
+            ('Widget A', 9.99,  100),
+            ('Widget B', 24.99, 50),
+            ('Gizmo X',  4.99,  200)
+          ON CONFLICT DO NOTHING;
+          INSERT INTO orders (user_id, product_id, quantity) VALUES
+            (1, 1, 2), (2, 3, 1), (3, 2, 5);
+
+---
+# Continuously inserts a new order every 10 seconds.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres-writer
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres-writer
+  template:
+    metadata:
+      labels:
+        app: postgres-writer
+    spec:
+      containers:
+        - name: writer
+          image: postgres:16
+          env:
+            - name: PGPASSWORD
+              value: pgpassword123
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h postgres -U pgadmin -d testdb; do sleep 2; done
+              while true; do
+                psql -h postgres -U pgadmin -d testdb -c \
+                  "INSERT INTO orders (user_id, product_id, quantity)
+                   SELECT (random()*2+1)::int, (random()*2+1)::int, (random()*9+1)::int;"
+                sleep 10
+              done
+
+# ─── MySQL ────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mysql-credentials
+  namespace: kubetable-test
+type: Opaque
+stringData:
+  rootUser: root
+  rootPassword: mysqlpassword123
+  username: appuser
+  password: apppassword123
+  database: testdb
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.4
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: mysqlpassword123
+            - name: MYSQL_DATABASE
+              value: testdb
+            - name: MYSQL_USER
+              value: appuser
+            - name: MYSQL_PASSWORD
+              value: apppassword123
+          readinessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+                - -uroot
+                - -pmysqlpassword123
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mysql
+  namespace: kubetable-test
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mysql-seed
+  namespace: kubetable-test
+spec:
+  restartPolicy: OnFailure
+  initContainers:
+    - name: wait
+      image: mysql:8.4
+      command:
+        - sh
+        - -c
+        - until mysqladmin ping -h mysql -uroot -pmysqlpassword123 --silent; do sleep 3; done
+  containers:
+    - name: seed
+      image: mysql:8.4
+      command:
+        - mysql
+        - -h
+        - mysql
+        - -uroot
+        - -pmysqlpassword123
+        - testdb
+        - -e
+        - |
+          CREATE TABLE IF NOT EXISTS customers (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            email VARCHAR(100) UNIQUE NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+          );
+          CREATE TABLE IF NOT EXISTS items (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            name VARCHAR(100) NOT NULL,
+            price DECIMAL(10,2),
+            inventory INT DEFAULT 0
+          );
+          CREATE TABLE IF NOT EXISTS purchases (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            customer_id INT,
+            item_id INT,
+            qty INT,
+            purchased_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (customer_id) REFERENCES customers(id),
+            FOREIGN KEY (item_id) REFERENCES items(id)
+          );
+          INSERT IGNORE INTO customers (name, email) VALUES
+            ('Dave', 'dave@example.com'),
+            ('Eve',  'eve@example.com'),
+            ('Frank','frank@example.com');
+          INSERT IGNORE INTO items (name, price, inventory) VALUES
+            ('Thingamajig', 14.99, 75),
+            ('Doohickey',   7.50,  150),
+            ('Whatchamacallit', 29.99, 30);
+          INSERT INTO purchases (customer_id, item_id, qty) VALUES (1,1,1),(2,3,2),(3,2,3);
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql-writer
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql-writer
+  template:
+    metadata:
+      labels:
+        app: mysql-writer
+    spec:
+      containers:
+        - name: writer
+          image: mysql:8.4
+          command:
+            - sh
+            - -c
+            - |
+              until mysqladmin ping -h mysql -uroot -pmysqlpassword123 --silent; do sleep 3; done
+              while true; do
+                mysql -h mysql -uroot -pmysqlpassword123 testdb -e \
+                  "INSERT INTO purchases (customer_id, item_id, qty)
+                   VALUES (FLOOR(RAND()*3)+1, FLOOR(RAND()*3)+1, FLOOR(RAND()*5)+1);"
+                sleep 10
+              done
+
+# ─── Redis ────────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: redis-credentials
+  namespace: kubetable-test
+type: Opaque
+stringData:
+  password: redispassword123
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7
+          command:
+            - redis-server
+            - --requirepass
+            - redispassword123
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - containerPort: 6379
+          env:
+            - name: REDISCLI_AUTH
+              value: redispassword123
+          readinessProbe:
+            exec:
+              command:
+                - redis-cli
+                - ping
+            initialDelaySeconds: 5
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: kubetable-test
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379
+      targetPort: 6379
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: redis-seed
+  namespace: kubetable-test
+spec:
+  restartPolicy: OnFailure
+  initContainers:
+    - name: wait
+      image: redis:7
+      env:
+        - name: REDISCLI_AUTH
+          value: redispassword123
+      command:
+        - sh
+        - -c
+        - until redis-cli -h redis ping; do sleep 2; done
+  containers:
+    - name: seed
+      image: redis:7
+      env:
+        - name: REDISCLI_AUTH
+          value: redispassword123
+      command:
+        - sh
+        - -c
+        - |
+          # Strings
+          redis-cli -h redis SET app:version "1.0.0"
+          redis-cli -h redis SET app:status "healthy"
+          redis-cli -h redis SET counter:visits 42
+
+          # Hashes (user profiles)
+          redis-cli -h redis HSET user:1 name Alice email alice@example.com role admin
+          redis-cli -h redis HSET user:2 name Bob  email bob@example.com  role viewer
+
+          # Lists (recent activity log)
+          redis-cli -h redis RPUSH activity:log "user_login:alice" "page_view:/home" "user_login:bob" "page_view:/products"
+
+          # Sets (tags)
+          redis-cli -h redis SADD tags:product:1 "new" "featured" "sale"
+          redis-cli -h redis SADD tags:product:2 "featured"
+
+          # Sorted set (leaderboard)
+          redis-cli -h redis ZADD leaderboard 1500 alice 1200 bob 1800 carol
+
+          # Key with TTL
+          redis-cli -h redis SET session:abc123 "token_data_here" EX 3600
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis-writer
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis-writer
+  template:
+    metadata:
+      labels:
+        app: redis-writer
+    spec:
+      containers:
+        - name: writer
+          image: redis:7
+          env:
+            - name: REDISCLI_AUTH
+              value: redispassword123
+          command:
+            - sh
+            - -c
+            - |
+              until redis-cli -h redis ping; do sleep 2; done
+              i=0
+              while true; do
+                redis-cli -h redis INCR counter:visits
+                redis-cli -h redis RPUSH activity:log "event:tick:$i"
+                redis-cli -h redis LTRIM activity:log 0 99
+                redis-cli -h redis SET "metric:ts:$(date +%s)" "$i"
+                i=$((i+1))
+                sleep 10
+              done
+
+# ─── MongoDB ──────────────────────────────────────────────────────────────────
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: mongodb-credentials
+  namespace: kubetable-test
+type: Opaque
+stringData:
+  username: mongoadmin
+  password: mongopassword123
+  database: testdb
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb
+  template:
+    metadata:
+      labels:
+        app: mongodb
+    spec:
+      containers:
+        - name: mongodb
+          image: mongo:7
+          ports:
+            - containerPort: 27017
+          env:
+            - name: MONGO_INITDB_ROOT_USERNAME
+              value: mongoadmin
+            - name: MONGO_INITDB_ROOT_PASSWORD
+              value: mongopassword123
+            - name: MONGO_INITDB_DATABASE
+              value: testdb
+          readinessProbe:
+            exec:
+              command:
+                - mongosh
+                - --quiet
+                - --eval
+                - "db.adminCommand('ping')"
+                - -u
+                - mongoadmin
+                - -p
+                - mongopassword123
+                - --authenticationDatabase
+                - admin
+            initialDelaySeconds: 10
+            periodSeconds: 5
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mongodb
+  namespace: kubetable-test
+spec:
+  selector:
+    app: mongodb
+  ports:
+    - port: 27017
+      targetPort: 27017
+
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: mongodb-seed
+  namespace: kubetable-test
+spec:
+  restartPolicy: OnFailure
+  initContainers:
+    - name: wait
+      image: mongo:7
+      command:
+        - sh
+        - -c
+        - |
+          until mongosh --quiet --eval "db.adminCommand('ping')" \
+            -u mongoadmin -p mongopassword123 --authenticationDatabase admin \
+            mongodb:27017; do sleep 3; done
+  containers:
+    - name: seed
+      image: mongo:7
+      command:
+        - mongosh
+        - mongodb://mongoadmin:mongopassword123@mongodb:27017/testdb?authSource=admin
+        - --eval
+        - |
+          db.users.insertMany([
+            { name: "Grace", email: "grace@example.com", role: "admin",  createdAt: new Date() },
+            { name: "Hank",  email: "hank@example.com",  role: "editor", createdAt: new Date() },
+            { name: "Iris",  email: "iris@example.com",  role: "viewer", createdAt: new Date() }
+          ]);
+          db.products.insertMany([
+            { name: "Laptop",  price: 999.99, tags: ["electronics", "computers"], stock: 20 },
+            { name: "Headset", price: 49.99,  tags: ["electronics", "audio"],     stock: 80 },
+            { name: "Desk",    price: 249.99, tags: ["furniture"],                stock: 15 }
+          ]);
+          db.orders.insertMany([
+            { userId: "grace@example.com", product: "Laptop",  qty: 1, orderedAt: new Date() },
+            { userId: "hank@example.com",  product: "Headset", qty: 2, orderedAt: new Date() },
+            { userId: "iris@example.com",  product: "Desk",    qty: 1, orderedAt: new Date() }
+          ]);
+          db.logs.insertMany([
+            { level: "info",  message: "Service started",        ts: new Date() },
+            { level: "warn",  message: "High memory usage",      ts: new Date() },
+            { level: "error", message: "Connection timeout",     ts: new Date() }
+          ]);
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mongodb-writer
+  namespace: kubetable-test
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mongodb-writer
+  template:
+    metadata:
+      labels:
+        app: mongodb-writer
+    spec:
+      containers:
+        - name: writer
+          image: mongo:7
+          command:
+            - sh
+            - -c
+            - |
+              until mongosh --quiet --eval "db.adminCommand('ping')" \
+                -u mongoadmin -p mongopassword123 --authenticationDatabase admin \
+                mongodb:27017; do sleep 3; done
+              i=0
+              while true; do
+                mongosh "mongodb://mongoadmin:mongopassword123@mongodb:27017/testdb?authSource=admin" --eval "
+                  db.logs.insertOne({ level: 'info', message: 'tick $i', ts: new Date() });
+                  db.orders.insertOne({ userId: 'writer', product: 'Widget', qty: Math.floor(Math.random()*5)+1, orderedAt: new Date() });
+                "
+                i=$((i+1))
+                sleep 10
+              done

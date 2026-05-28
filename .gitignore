@@ -1,0 +1,14 @@
+node_modules
+dist
+dist-ssr
+*.local
+.DS_Store
+*.log
+
+# Tauri
+src-tauri/target
+
+# Env files
+.env
+.env.*
+!.env.example
