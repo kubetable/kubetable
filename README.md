@@ -4,6 +4,8 @@ KubeTable Community is a local-first desktop client for working with databases r
 
 It reads your kubeconfig, discovers database services, opens local port-forwards, and gives you a query workspace without switching between `kubectl port-forward`, terminal tabs, and separate database tools.
 
+![KubeTable Community desktop screenshot](docs/assets/kubetable-community.png)
+
 ## Supported Databases
 
 - PostgreSQL
