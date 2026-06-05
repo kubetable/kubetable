@@ -20,6 +20,13 @@ pub fn run() {
         )
         .init();
 
+    // macOS .app bundles inherit a minimal GUI PATH (/usr/bin:/bin:/usr/sbin:/sbin),
+    // so kubectl + cloud-auth helpers (gke-gcloud-auth-plugin, aws, doctl) installed
+    // via Homebrew or krew are not found, producing "No such file or directory
+    // (os error 2)" when port-forward tries to spawn them. Widen PATH here so any
+    // Command::new("kubectl") downstream resolves.
+    augment_path();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -67,4 +74,36 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn augment_path() {
+    let mut entries: Vec<std::path::PathBuf> = Vec::new();
+
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        "/opt/homebrew/bin".into(),
+        "/opt/homebrew/sbin".into(),
+        "/usr/local/bin".into(),
+        "/usr/local/sbin".into(),
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        let home = std::path::PathBuf::from(home);
+        candidates.push(home.join(".krew/bin"));
+        candidates.push(home.join("bin"));
+        candidates.push(home.join(".local/bin"));
+    }
+
+    let existing = std::env::var_os("PATH").unwrap_or_default();
+    for p in std::env::split_paths(&existing) {
+        entries.push(p);
+    }
+
+    for c in candidates {
+        if c.is_dir() && !entries.iter().any(|e| e == &c) {
+            entries.push(c);
+        }
+    }
+
+    if let Ok(joined) = std::env::join_paths(&entries) {
+        std::env::set_var("PATH", joined);
+    }
 }
