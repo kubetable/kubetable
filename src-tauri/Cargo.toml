@@ -1,6 +1,6 @@
 [package]
 name = "kubetable"
-version = "0.1.1"
+version = "0.1.2"
 description = "KubeTable — Kubernetes database browser"
 authors = ["KubeTable Contributors"]
 edition = "2021"
