@@ -1,3 +1,4 @@
+pub mod cassandra;
 pub mod cockroachdb;
 pub mod mongodb;
 pub mod mysql;

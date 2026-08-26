@@ -22,6 +22,7 @@ pub async fn detect_credentials(
         "redis" => detect_redis(client, namespace, service_name).await,
         "mysql" => detect_mysql(client, namespace, service_name).await,
         "mongodb" => detect_mongo(client, namespace, service_name).await,
+        "cassandra" => detect_cassandra(client, namespace, service_name).await,
         _ => detect_postgres(client, namespace, service_name).await,
     }
 }
@@ -331,6 +332,78 @@ async fn collect_pod_env(client: &Client, namespace: &str, service_name: &str) -
         }
     }
     env
+}
+
+async fn detect_cassandra(
+    client: &Client,
+    namespace: &str,
+    service_name: &str,
+) -> crate::error::Result<DetectedCredentials> {
+    let secret_api: Api<Secret> = Api::namespaced(client.clone(), namespace);
+
+    let base = service_name
+        .strip_suffix("-service")
+        .or_else(|| service_name.strip_suffix("-svc"))
+        .unwrap_or(service_name);
+
+    // k8ssandra operator stores the cluster name in a label on the service.
+    // The superuser secret is named {cluster-name}-superuser, which may differ
+    // from the service name when services include a region suffix (e.g. -us-east-2).
+    // cass-operator uses cassandra.datastax.com/cluster; k8ssandra uses k8ssandra.io/cluster-name.
+    let svc_api: Api<Service> = Api::namespaced(client.clone(), namespace);
+    let k8ssandra_cluster = svc_api.get(service_name).await.ok()
+        .and_then(|svc| svc.metadata.labels)
+        .and_then(|labels| {
+            labels.get("k8ssandra.io/cluster-name")
+                .or_else(|| labels.get("cassandra.datastax.com/cluster"))
+                .cloned()
+        });
+
+    let mut candidates: Vec<String> = Vec::new();
+
+    // k8ssandra superuser secret pattern: {cluster-name}-superuser
+    if let Some(ref cluster) = k8ssandra_cluster {
+        candidates.push(format!("{cluster}-superuser"));
+        candidates.push(format!("{cluster}-credentials"));
+    }
+
+    candidates.push(format!("{base}-superuser"));
+    candidates.push(format!("{base}-credentials"));
+    candidates.push(format!("{service_name}-credentials"));
+    candidates.push(base.to_string());
+
+    let user_keys = ["username", "CASSANDRA_USER", "user"];
+    let pw_keys = ["password", "CASSANDRA_PASSWORD", "CASSANDRA_PASS"];
+
+    for name in &candidates {
+        if let Ok(secret) = secret_api.get(name).await {
+            let data = secret.data.unwrap_or_default();
+            let user = user_keys.iter().find_map(|k| data.get(*k)).map(|v| decode_bytes(&v.0));
+            let password = pw_keys.iter().find_map(|k| data.get(*k)).map(|v| decode_bytes(&v.0));
+            if user.is_some() || password.is_some() {
+                let database = data.get("keyspace").map(|v| decode_bytes(&v.0));
+                return Ok(DetectedCredentials {
+                    user,
+                    password,
+                    database,
+                    source: format!("Secret/{name}"),
+                });
+            }
+        }
+    }
+
+    let env = collect_pod_env(client, namespace, service_name).await;
+    let user = env.get("CASSANDRA_USER").cloned();
+    let password = env.get("CASSANDRA_PASSWORD")
+        .or_else(|| env.get("CASSANDRA_PASS"))
+        .cloned();
+    let database = env.get("CASSANDRA_KEYSPACE").cloned();
+    let source = if user.is_some() || password.is_some() {
+        "pod env".into()
+    } else {
+        "No Cassandra credentials found".into()
+    };
+    Ok(DetectedCredentials { user, password, database, source })
 }
 
 fn decode_bytes(bytes: &[u8]) -> String {

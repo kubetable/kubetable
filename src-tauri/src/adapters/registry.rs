@@ -1,4 +1,5 @@
 use super::{
+    cassandra::CassandraAdapter,
     cockroachdb::CockroachDbAdapter,
     mongodb::MongoDbAdapter,
     mysql::MySqlAdapter,
@@ -13,6 +14,7 @@ pub static ADAPTERS: &[&(dyn DbAdapter + Sync)] = &[
     &CockroachDbAdapter,
     &RedisAdapter,
     &MongoDbAdapter,
+    &CassandraAdapter,
 ];
 
 pub fn find_adapter(db_type: &str) -> Option<&'static (dyn DbAdapter + Sync)> {
