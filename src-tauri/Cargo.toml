@@ -35,3 +35,5 @@ redis = { version = "0.28", features = ["tokio-comp"] }
 mongodb = { version = "3" }
 futures-util = "0.3"
 base64 = "0.22"
+scylla = { version = "0.13", features = ["ssl"] }
+openssl = "0.10"
