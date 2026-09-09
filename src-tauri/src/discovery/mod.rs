@@ -42,6 +42,10 @@ pub async fn discover_services(client: &Client) -> crate::error::Result<Vec<Disc
 
         // Check each port against the adapter registry
         if let Some(spec) = &svc.spec {
+            // Skip services with no pod selector — they have no endpoints to port-forward to.
+            if spec.selector.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+                continue;
+            }
             for port_entry in spec.ports.iter().flatten() {
                 let port = port_entry.port as u16;
 

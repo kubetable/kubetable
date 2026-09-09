@@ -13,8 +13,9 @@ export function CredentialModal({ service, detected, onSubmit, onCancel }: Props
   const dbType = service.db_type.toLowerCase();
   const isRedis = dbType === "redis";
   const isMongo = dbType === "mongodb";
+  const isCassandra = dbType === "cassandra";
 
-  const defaultUser = detected?.user ?? (isRedis ? "" : isMongo ? "admin" : "postgres");
+  const defaultUser = detected?.user ?? (isRedis ? "" : isMongo ? "admin" : isCassandra ? "" : "postgres");
   const defaultDb   = detected?.database ?? (isRedis ? "" : isMongo ? "admin" : "");
 
   const [user, setUser] = useState(defaultUser);
@@ -62,9 +63,9 @@ export function CredentialModal({ service, detected, onSubmit, onCancel }: Props
           </label>
           {!isRedis && (
             <label>
-              Database
+              {isCassandra ? "Keyspace" : "Database"}
               <input
-                placeholder={isMongo ? "admin" : "postgres"}
+                placeholder={isMongo ? "admin" : isCassandra ? "keyspace (optional)" : "postgres"}
                 value={database}
                 onChange={(e) => setDatabase(e.target.value)}
               />

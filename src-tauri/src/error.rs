@@ -26,6 +26,9 @@ pub enum AppError {
     #[error("MongoDB error: {0}")]
     Mongo(String),
 
+    #[error("Cassandra error: {0}")]
+    Cassandra(String),
+
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
 
